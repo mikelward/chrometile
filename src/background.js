@@ -170,6 +170,7 @@ class Display {
                 this._layout = settings[`layout_${this.id}`];
                 this._main_wins = settings[`main_wins_${this.id}`];
                 this._split_pct = settings[`split_pct_${this.id}`];
+                resolve();
             });
         });
     }
@@ -437,51 +438,66 @@ function changeWindowState(state) {
 }
 
 // By default we set enabled true only for Chromebooks™, but this
-// can be overridden in the settings.tileWindows
-isChromebook().then(isCrOs => {
-    getSettings({"enabled": isCrOs}).then(settings => {
-        if (settings.enabled) {
-            getDisplays().then(tileWindows, reason => console.error(reason));
+// can be overridden in the settings.
+const enabled = isChromebook().then(isCrOs => getSettings({"enabled": isCrOs})).then(settings => {
+    if (!settings.enabled) {
+        console.warn("Tiling Window Manager for Chrome OS\u2122 is disabled (by default when not on a Chromebook\u2122). Not running.");
+    }
+    return settings.enabled;
+});
+let displaysLoaded = enabled.then(on => on && getDisplays());
+enabled.then(on => { if (on) displaysLoaded.then(tileWindows, reason => console.error(reason)); });
 
-            chrome.system.display.onDisplayChanged.addListener(debounce(() => {
-                getDisplays().then(tileWindows, reason => console.error(reason));
-            }, 250));
+// MV3 delivers the event that wakes a sleeping service worker only to
+// listeners added synchronously when the script first runs, so add them
+// here, and have each wait until the settings and displays are loaded.
+function whenReady(callback) {
+    return function() {
+        let args = arguments;
+        return enabled.then(on => {
+            if (on) return displaysLoaded.then(() => callback.apply(this, args), reason => console.error(reason));
+        });
+    };
+}
 
-            chrome.windows.onCreated.addListener(tileWindows);
-            chrome.windows.onRemoved.addListener(tileWindows);
-            chrome.windows.onFocusChanged.addListener(tileWindows);
+chrome.system.display.onDisplayChanged.addListener(debounce(() => {
+    enabled.then(on => {
+        if (!on) return;
+        displaysLoaded = getDisplays();
+        displaysLoaded.then(tileWindows, reason => console.error(reason));
+    });
+}, 250));
 
-            chrome.commands.onCommand.addListener(function(command) {
-                console.log(command);
-                const commands = new Map([
-                    ["001-shrink-main-pane",            () => changeSplit(Change.INCREASE)    ],
-                    ["002-expand-main-pane",            () => changeSplit(Change.DECREASE)    ],
-                    ["010-focus-next-win-ccw",          () => focusRotate(Rotation.CCW)       ],
-                    ["011-focus-next-win-cw",           () => focusRotate(Rotation.CW)        ],
-                    ["020-focus-dsp-1",                 () => focusDisplay(0)                 ],
-                    ["021-focus-dsp-2",                 () => focusDisplay(1)                 ],
-                    ["022-focus-dsp-3",                 () => focusDisplay(2)                 ],
-                    ["100-move-focused-win-1-win-ccw",  () => windowRotate(Rotation.CCW)      ],
-                    ["101-move-focused-win-1-win-cw",   () => windowRotate(Rotation.CW)       ],
-                    ["110-move-focused-win-1-dsp-1",    () => moveToDisplay(0)                ],
-                    ["111-move-focused-win-1-dsp-2",    () => moveToDisplay(1)                ],
-                    ["112-move-focused-win-1-dsp-3",    () => moveToDisplay(2)                ],
-                    ["120-swap-focused-win-main",       () => windowSwapMain()                ],
-                    ["130-float-focused-win",           () => changeWindowState(WindowState.FLOATING) ],
-                    ["131-tile-focused-win",            () => changeWindowState(WindowState.TILED)    ],
-                    ["200-increase-main-wins",          () => changeMainWins(Change.INCREASE) ],
-                    ["201-decrease-main-wins",          () => changeMainWins(Change.DECREASE) ],
-                    ["300-next-layout",                 () => changeLayout(Change.INCREASE)   ],
-                    ["301-prev-layout",                 () => changeLayout(Change.DECREASE)   ],
-                    ["900-reevaluate-wins",             () => tileWindows()                   ]
-                ]);
-                if (commands.has(command)) commands.get(command)();
-            })
-        } else {
-            console.warn("Tiling Window Manager for Chrome OS\u2122 is disabled (by default when not on a Chromebook\u2122). Not running.");
-        }
-    })
-})
+chrome.windows.onCreated.addListener(whenReady(tileWindows));
+chrome.windows.onRemoved.addListener(whenReady(tileWindows));
+chrome.windows.onFocusChanged.addListener(whenReady(tileWindows));
+
+chrome.commands.onCommand.addListener(whenReady(function(command) {
+    console.log(command);
+    const commands = new Map([
+        ["001-shrink-main-pane",            () => changeSplit(Change.INCREASE)    ],
+        ["002-expand-main-pane",            () => changeSplit(Change.DECREASE)    ],
+        ["010-focus-next-win-ccw",          () => focusRotate(Rotation.CCW)       ],
+        ["011-focus-next-win-cw",           () => focusRotate(Rotation.CW)        ],
+        ["020-focus-dsp-1",                 () => focusDisplay(0)                 ],
+        ["021-focus-dsp-2",                 () => focusDisplay(1)                 ],
+        ["022-focus-dsp-3",                 () => focusDisplay(2)                 ],
+        ["100-move-focused-win-1-win-ccw",  () => windowRotate(Rotation.CCW)      ],
+        ["101-move-focused-win-1-win-cw",   () => windowRotate(Rotation.CW)       ],
+        ["110-move-focused-win-1-dsp-1",    () => moveToDisplay(0)                ],
+        ["111-move-focused-win-1-dsp-2",    () => moveToDisplay(1)                ],
+        ["112-move-focused-win-1-dsp-3",    () => moveToDisplay(2)                ],
+        ["120-swap-focused-win-main",       () => windowSwapMain()                ],
+        ["130-float-focused-win",           () => changeWindowState(WindowState.FLOATING) ],
+        ["131-tile-focused-win",            () => changeWindowState(WindowState.TILED)    ],
+        ["200-increase-main-wins",          () => changeMainWins(Change.INCREASE) ],
+        ["201-decrease-main-wins",          () => changeMainWins(Change.DECREASE) ],
+        ["300-next-layout",                 () => changeLayout(Change.INCREASE)   ],
+        ["301-prev-layout",                 () => changeLayout(Change.DECREASE)   ],
+        ["900-reevaluate-wins",             () => tileWindows()                   ]
+    ]);
+    if (commands.has(command)) commands.get(command)();
+}));
 
 // Events sent by options page
 chrome.runtime.onMessage.addListener(debounce(request => {
